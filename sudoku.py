@@ -13,9 +13,12 @@ class sudoku_c:
             self.loNumSetInBank = [set() for i in range(self.bankNum)]
 
         def Clear(self):
-            self.loNumSetInBank.clear()
-            self.loNumSetInCol.clear()
-            self.loNumSetInRow.clear()
+            for i in range(self.sideLen):
+                self.loNumSetInCol[i].clear()
+                self.loNumSetInRow[i].clear()
+
+            for i in range(self.bankNum):
+                self.loNumSetInBank[i].clear()
 
         def Copy(self, summ):
             assert isinstance(summ, sudoku_c.summary_c)
@@ -103,7 +106,11 @@ class sudoku_c:
         self.bankNum = rank * rank
         self.numSize = self.bankSize * self.bankNum
 
-        self.loNum = list(range(1, self.numSize + 1))
+        self.loNum = [None for i in range(self.numSize)]
+        self.summary = sudoku_c.summary_c(self.rank)
+
+        self.UpdateSummary()
+
 
     def Pos2NumIdx(self, x, y):
         numIdx = y * self.sideLen + x
@@ -125,9 +132,47 @@ class sudoku_c:
 
         return (x, y, bankIdx)
 
+    def UpdateSummary(self):
+        self.summary.Clear()
+
+        isValid = True
+        for x in range(self.sideLen):
+            if not isValid:
+                break
+            for y in range(self.sideLen):
+                bankIdx = self.Pos2BankIdx(x, y)
+                numIdx = self.Pos2NumIdx(x, y)
+
+                num = self.loNum[numIdx]
+                if num is not None:
+                    if not self.summary.Add(x, y, bankIdx, num):
+                        isValid = False
+                        break
+
+        return isValid
+
     def Clear(self):
         for numIdx in range(self.numSize):
             self.loNum[numIdx] = None
+        self.summary.Clear()
+
+    def SetNum(self, numIdx, num):
+        assert self.loNum[numIdx] is None
+
+        x, y, bankIdx = self.NumIdx2PosPlate(numIdx)
+        if self.summary.Add(x, y, bankIdx, num):
+            self.loNum[numIdx] = num
+            return True
+        else:
+            return False
+
+    def DelNum(self, numIdx):
+        assert self.loNum[numIdx] is not None
+
+        num = self.loNum[numIdx]
+        self.loNum[numIdx] = None
+        x, y, bankIdx = self.NumIdx2PosPlate(numIdx)
+        self.summary.Remove(x, y, bankIdx, num)
 
     def Print(self, stream = sys.stdout):
         for numIdx, num in enumerate(self.loNum):
@@ -188,65 +233,36 @@ class sudoku_c:
 
         return drawMat
 
-    def BuildSumm(self):
-        summ = sudoku_c.summary_c(self.rank)
 
-        isValid = True
-        for x in range(self.sideLen):
-            if not isValid:
-                break
-            for y in range(self.sideLen):
-                bankIdx = self.Pos2BankIdx(x, y)
-                numIdx = self.Pos2NumIdx(x, y)
-
-                num = self.loNum[numIdx]
-                if num is not None:
-                    if not summ.Add(x, y, bankIdx, num):
-                        isValid = False
-                        break
-
-        if isValid:
-            return summ
-        else:
-            return None
 
     def CheckValid(self):
-        return self.BuildSumm() is not None
+        return self.UpdateSummary()
 
-    def BackdateStepRecord(self, loStepRecord, summ):
-        noSolution = False
-        numIdx = -1
+    def BackdateStepRecord(self, loStepRecord):
+        success = True
         while True:
             if len(loStepRecord) > 0:
                 preStepRecord = loStepRecord[-1]
                 assert isinstance(preStepRecord, sudoku_c.stepRecord_c)
 
                 oldNumIdx = preStepRecord.numIdx
-                oldNum = self.loNum[oldNumIdx]
-                oldX, oldY, oldBankIdx = self.NumIdx2PosPlate(oldNumIdx)
-
-                summ.Remove(oldX, oldY, oldBankIdx, oldNum)
+                self.DelNum(oldNumIdx)
 
                 newNum = preStepRecord.GetPossibleNum()
-                self.loNum[oldNumIdx] = newNum
-
                 if newNum is not None:
-                    summ.Add(oldX, oldY, oldBankIdx, newNum)
-                    numIdx = oldNumIdx + 1
+                    success = self.SetNum(oldNumIdx, newNum)
+                    assert success
                     break
                 else:
                     loStepRecord.pop(-1)
             else:
-                noSolution = True
+                success = False
                 break
 
-        return (not noSolution, numIdx)
+        return success
 
 
     def Gen_SimpleBackdate(self, showProgress = False):
-        summ = self.BuildSumm()
-        assert summ is not None
-
         winName = "sudoku_%d_progress" % self.rank
 
         sOriNumIdx = set()
@@ -261,18 +277,20 @@ class sudoku_c:
             num = self.loNum[numIdx]
             if num is None:
                 x, y, bankIdx = self.NumIdx2PosPlate(numIdx)
-                tPossibleNum = summ.GetPossibleNum(x, y, bankIdx)
+                tPossibleNum = self.summary.GetPossibleNum(x, y, bankIdx)
                 if tPossibleNum is not None:
                     stepRecord = sudoku_c.stepRecord_c(numIdx, tPossibleNum)
                     newNum = stepRecord.GetPossibleNum()
+                    success = self.SetNum(numIdx, newNum)
+                    assert success
 
                     loStepRecord.append(stepRecord)
-                    self.loNum[numIdx] = newNum
 
-                    summ.Add(x, y, bankIdx, newNum)
                 else:
-                    retVal, numIdx = self.BackdateStepRecord(loStepRecord, summ)
-                    noSolution = not retVal
+                    success = self.BackdateStepRecord(loStepRecord)
+                    noSolution = not success
+                    if success:
+                        numIdx = loStepRecord[-1].numIdx + 1
             else:
                 numIdx += 1
 
@@ -287,10 +305,13 @@ class sudoku_c:
 
         return not noSolution
 
-    def Gen_LessPossFirst(self, showProgress=False):
-        summ = self.BuildSumm()
-        assert summ is not None
+    def DumpStepRecord(self, loStepRecord):
+        for stepRecord in loStepRecord:
+            assert isinstance(stepRecord, sudoku_c.stepRecord_c)
+            print("%d " % stepRecord.numIdx, end='')
+        print()
 
+    def Gen_LessPossFirst(self, showProgress=False):
         sOriNumIdx = set()
         for numIdx, num in enumerate(self.loNum):
             if num is not None:
@@ -307,13 +328,14 @@ class sudoku_c:
         noSolution = False
         hasEmptyCell = False
         hasImpossCell = False
+        loopNum = 0
         while not noSolution:
             num = self.loNum[numIdx]
             if num is None:
                 hasEmptyCell = True
 
                 x, y, bankIdx = self.NumIdx2PosPlate(numIdx)
-                tPossibleNum = summ.GetPossibleNum(x, y, bankIdx)
+                tPossibleNum = self.summary.GetPossibleNum(x, y, bankIdx)
 
                 if tPossibleNum is not None:
                     if minPossNumIdx == -1:
@@ -333,9 +355,15 @@ class sudoku_c:
             numIdx += 1
 
             if numIdx >= self.numSize:
+                loopNum += 1
+                if loopNum % 1000 == 0:
+                    print("Total loop num: %d" % loopNum)
+
                 if hasImpossCell:
-                    retVal = self.BackdateStepRecord(loStepRecord, summ)[0]
-                    noSolution = not retVal
+                    success = self.BackdateStepRecord(loStepRecord)
+                    noSolution = not success
+
+                    #self.DumpStepRecord(loStepRecord)
 
                     if noSolution:
                         pass
@@ -344,12 +372,10 @@ class sudoku_c:
                     stepRecord = sudoku_c.stepRecord_c(minPossNumIdx, tMinPossNum)
                     newNum = stepRecord.GetPossibleNum()
 
-                    self.loNum[minPossNumIdx] = newNum
+                    success = self.SetNum(minPossNumIdx, newNum)
+                    assert success
 
                     loStepRecord.append(stepRecord)
-
-                    x, y, bankIdx = self.NumIdx2PosPlate(minPossNumIdx)
-                    summ.Add(x, y, bankIdx, newNum)
                 else:
                     break
 
@@ -363,12 +389,13 @@ class sudoku_c:
                 if showProgress:
                     sudokuMat = self.Draw(sOriNumIdx=sOriNumIdx)
                     cv2.imshow(winName, sudokuMat)
-                    cv2.waitKey(10)
+                    cv2.waitKey(1)
 
         if showProgress:
             cv2.waitKey()
             cv2.destroyWindow(winName)
 
+        print("Total loop num: %d" % loopNum)
 
         return not noSolution
 
@@ -378,13 +405,13 @@ class sudoku_c:
         for numIdx, num in enumerate(self.loNum):
             if num is not None:
                 if random.random() < maskRate:
-                    self.loNum[numIdx] = None
+                    self.DelNum(numIdx)
 
 
 
 
 if __name__ == "__main__":
-    sudoku = sudoku_c(4)
+    sudoku = sudoku_c(3)
     #sudoku.Print()
     #sudoku.Draw(30, winName="sudoku")
 
@@ -392,16 +419,16 @@ if __name__ == "__main__":
         sudoku.Clear()
 
         #sudoku.Gen_SimpleBackdate(True)
-        sudoku.Gen_LessPossFirst(True)
-        sudoku.Print()
+        sudoku.Gen_LessPossFirst()
+        #sudoku.Print()
 
         print()
 
     if 1:
-        sudoku.Mask(0.9)
+        sudoku.Mask(0.7)
         #sudoku.Gen_SimpleBackdate(True)
-        sudoku.Gen_LessPossFirst(True)
-        sudoku.Print()
+        sudoku.Gen_LessPossFirst()
+        #sudoku.Print()
 
 
 
